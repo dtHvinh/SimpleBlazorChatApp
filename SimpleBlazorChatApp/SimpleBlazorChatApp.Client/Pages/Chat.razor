@@ -1,0 +1,131 @@
+﻿@page "/chat"
+@rendermode InteractiveWebAssembly
+@using Microsoft.AspNetCore.SignalR.Client
+
+@inject NavigationManager Navigation
+
+@implements IAsyncDisposable
+
+<PageTitle>Global Chat</PageTitle>
+
+<style>
+    .vl {
+        border-left: 1px solid black;
+        height: 500px;
+    }
+</style>
+
+<div class="form-group">
+    <label>
+        Message:
+        <input @bind="messageInput" size="50" />
+    </label>
+    <InputSelect style="height:30px" @bind-Value=@messageTarget>
+        <option>All</option>
+        @foreach (var user in onlineUsers)
+        {
+            <option>@user</option>
+        }
+    </InputSelect>
+    <button @onclick="Send" disabled="@(!IsConnected)">Send</button>
+    <button @onclick="ClearMessages" disabled="@(!IsConnected)">Clear</button>
+</div>
+
+<hr>
+
+<div style="display: grid; grid-template-columns: 50% 0% 50%;">
+    <ul id="messagesList" class="col-6 w-100">
+        <li><h4><strong>Global Chat</strong></h4></li>
+        @foreach (var message in messages)
+        {
+            <li style="display:flex; flex-direction: row">
+                <span class="text-muted">@DateTime.Now.ToString("dd/MM/yy HH:mm:ss")&nbsp;</span>
+                <strong>@message.Item1:&nbsp;&nbsp;</strong>
+                <span>@message.Item2</span>
+            </li>
+        }
+    </ul>
+
+    <div class="vl"></div>
+
+    <ul id="onlineUser" style="list-style:none" class="col-6 w-100 d-flex flex-column gap-4">
+        <li><h4><strong>Online users</strong></h4></li>
+        @foreach (var onlineUser in onlineUsers)
+        {
+            <li>
+                <div class="d-flex flex-row align-items-center">
+                    <span class="col-5">@onlineUser</span>
+                    @if (onlineUser != hubConnection?.ConnectionId)
+                    {
+                        <button class="col-2">Private Chat</button>
+                    }
+                </div>
+            </li>
+        }
+    </ul>
+</div>
+
+@code {
+    private HubConnection? hubConnection;
+    private List<(string, string)> messages = [];
+    private List<string> onlineUsers = [];
+    private string? messageInput;
+    private string? messageTarget;
+
+    protected override async Task OnInitializedAsync()
+    {
+        hubConnection = new HubConnectionBuilder()
+            .WithUrl(Navigation.ToAbsoluteUri("/chatHub"))
+            .Build();
+
+        hubConnection.On<string, string>("ReceiveMessage", (user, message) =>
+        {
+            messages.Add((user, message));
+            InvokeAsync(StateHasChanged);
+        });
+
+        hubConnection.On<string>("UserConnected", (user) =>
+        {
+            var encodedMsg = $"User [{user}] has connected";
+            messages.Add(("System", encodedMsg));
+            onlineUsers.Add(user);
+            InvokeAsync(StateHasChanged);
+        });
+
+        hubConnection.On<string>("UserDisconnected", (user) =>
+        {
+            var encodedMsg = $"User [{user}] has disconnected";
+            messages.Add(("System", encodedMsg));
+            onlineUsers.Remove(user);
+            InvokeAsync(StateHasChanged);
+        });
+
+        await hubConnection.StartAsync();
+
+        onlineUsers = await hubConnection.InvokeAsync<List<string>>("GetOnlineUsers");
+    }
+
+    private async Task Send()
+    {
+        if (hubConnection is not null)
+        {
+            await hubConnection.SendAsync("SendMessage", hubConnection.ConnectionId, messageInput);
+        }
+    }
+
+    private void ClearMessages()
+    {
+        messages.Clear();
+    }
+
+    public bool IsConnected =>
+        hubConnection?.State == HubConnectionState.Connected;
+
+    public async ValueTask DisposeAsync()
+    {
+        if (hubConnection is not null)
+        {
+            await hubConnection.DisposeAsync();
+        }
+    }
+}
