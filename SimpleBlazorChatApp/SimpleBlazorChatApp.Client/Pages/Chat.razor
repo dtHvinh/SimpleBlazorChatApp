@@ -21,7 +21,7 @@
         <input @bind="messageInput" size="50" />
     </label>
     <InputSelect style="height:30px" @bind-Value=@messageTarget>
-        <option>All</option>
+        <option value="All">All</option>
         @foreach (var user in onlineUsers)
         {
             <option>@user</option>
@@ -29,17 +29,22 @@
     </InputSelect>
     <button @onclick="Send" disabled="@(!IsConnected)">Send</button>
     <button @onclick="ClearMessages" disabled="@(!IsConnected)">Clear</button>
+    <InputCheckbox class="ms-4" @bind-Value=@displaySystemMessage></InputCheckbox>Display System Message
 </div>
 
 <hr>
 
 <div style="display: grid; grid-template-columns: 50% 0% 50%;">
     <ul id="messagesList" class="col-6 w-100">
-        <li><h4><strong>Global Chat</strong></h4></li>
+        <li><h4><strong>Chat</strong></h4></li>
         @foreach (var message in messages)
         {
-            <li style="display:flex; flex-direction: row">
+            <li style="display:flex; flex-direction: row; @(message.Item4 is Perspective.Sender ? "justify-content: flex-end" : "")">
                 <span class="text-muted">@DateTime.Now.ToString("dd/MM/yy HH:mm:ss")&nbsp;</span>
+                @if (message.Item3 == MessageType.Whisper)
+                {
+                    <span class="text-muted" style="color: rebeccapurple">(Whisper)&nbsp;</span>
+                }
                 <strong>@message.Item1:&nbsp;&nbsp;</strong>
                 <span>@message.Item2</span>
             </li>
@@ -57,7 +62,7 @@
                     <span class="col-5">@onlineUser</span>
                     @if (onlineUser != hubConnection?.ConnectionId)
                     {
-                        <button class="col-2">Private Chat</button>
+                        <button class="col-2" @onclick=@(() => messageTarget = onlineUser)>Private Chat</button>
                     }
                 </div>
             </li>
@@ -67,10 +72,25 @@
 
 @code {
     private HubConnection? hubConnection;
-    private List<(string, string)> messages = [];
+    private List<(string, string, MessageType, Perspective)> messages = [];
     private List<string> onlineUsers = [];
     private string? messageInput;
-    private string? messageTarget;
+    private string messageTarget = "All";
+    private bool displaySystemMessage = true;
+
+    public enum MessageType
+    {
+        Global,
+        Whisper
+    }
+
+    public enum Perspective
+    {
+        Sender,
+        Receiver
+    }
+
+    [Inject] IJSRuntime JSRuntime { get; set; }
 
     protected override async Task OnInitializedAsync()
     {
@@ -80,36 +100,57 @@
 
         hubConnection.On<string, string>("ReceiveMessage", (user, message) =>
         {
-            messages.Add((user, message));
+            messages.Add((user, message, MessageType.Global, Perspective.Receiver));
+            InvokeAsync(StateHasChanged);
+        });
+
+        hubConnection.On<string, string, Perspective>("ReceiveWhisperMessage", (user, message, perspective) =>
+        {
+            messages.Add((user, message, MessageType.Whisper, perspective));
             InvokeAsync(StateHasChanged);
         });
 
         hubConnection.On<string>("UserConnected", (user) =>
         {
-            var encodedMsg = $"User [{user}] has connected";
-            messages.Add(("System", encodedMsg));
-            onlineUsers.Add(user);
-            InvokeAsync(StateHasChanged);
+            if (displaySystemMessage)
+            {
+                var encodedMsg = $"User [{user}] has connected";
+                messages.Add(("System", encodedMsg, MessageType.Global, Perspective.Receiver));
+                onlineUsers.Add(user);
+                InvokeAsync(StateHasChanged);
+            }
         });
 
         hubConnection.On<string>("UserDisconnected", (user) =>
         {
-            var encodedMsg = $"User [{user}] has disconnected";
-            messages.Add(("System", encodedMsg));
-            onlineUsers.Remove(user);
-            InvokeAsync(StateHasChanged);
+            if (displaySystemMessage)
+            {
+                var encodedMsg = $"User [{user}] has disconnected";
+                messages.Add(("System", encodedMsg, MessageType.Global, Perspective.Receiver));
+                onlineUsers.Remove(user);
+                InvokeAsync(StateHasChanged);
+            }
         });
 
         await hubConnection.StartAsync();
 
         onlineUsers = await hubConnection.InvokeAsync<List<string>>("GetOnlineUsers");
+
+        onlineUsers.Remove(onlineUsers.Find(e=> e == hubConnection?.ConnectionId!)!);
     }
 
     private async Task Send()
     {
         if (hubConnection is not null)
         {
-            await hubConnection.SendAsync("SendMessage", hubConnection.ConnectionId, messageInput);
+            if (messageTarget != "All")
+            {
+                await hubConnection.SendAsync("SendMessage", hubConnection.ConnectionId, messageTarget, messageInput);
+            }
+            else
+            {
+                await hubConnection.SendAsync("SendGlobalMessage", hubConnection.ConnectionId, messageInput);
+            }
         }
     }
 
